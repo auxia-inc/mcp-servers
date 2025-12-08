@@ -1,0 +1,27 @@
+{
+  "name": "@auxia/slack-message-manager",
+  "version": "1.0.0",
+  "description": "Custom MCP server for managing Slack messages at Auxia",
+  "type": "module",
+  "main": "build/index.js",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch",
+    "start": "node build/index.js"
+  },
+  "keywords": [
+    "mcp",
+    "slack",
+    "model-context-protocol"
+  ],
+  "author": "Auxia",
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.4",
+    "@slack/web-api": "^7.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.5.0"
+  }
+}
