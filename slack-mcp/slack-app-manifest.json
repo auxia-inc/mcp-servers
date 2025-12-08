@@ -1,0 +1,84 @@
+{
+    "display_information": {
+        "name": "My local MCP"
+    },
+    "features": {
+        "bot_user": {
+            "display_name": "My local MCP",
+            "always_online": false
+        }
+    },
+    "oauth_config": {
+        "scopes": {
+            "user": [
+                "canvases:read",
+                "canvases:write",
+                "channels:history",
+                "channels:read",
+                "channels:write",
+                "channels:write.invites",
+                "chat:write",
+                "email",
+                "groups:history",
+                "groups:read",
+                "groups:write",
+                "groups:write.invites",
+                "identity.avatar",
+                "identity.basic",
+                "identity.email",
+                "identity.team",
+                "im:history",
+                "im:read",
+                "im:write",
+                "mpim:history",
+                "mpim:read",
+                "mpim:write",
+                "reactions:read",
+                "reactions:write",
+                "remote_files:share",
+                "search:read",
+                "search:read.files",
+                "search:read.im",
+                "search:read.mpim",
+                "search:read.private",
+                "search:read.public",
+                "search:read.users",
+                "team:read",
+                "usergroups:read",
+                "usergroups:write",
+                "users.profile:read",
+                "users:read",
+                "users:read.email",
+                "users:write"
+            ],
+            "bot": [
+                "channels:history",
+                "channels:read",
+                "chat:write",
+                "chat:write.public",
+                "groups:history",
+                "im:history",
+                "im:read",
+                "mpim:history",
+                "mpim:read",
+                "reactions:read",
+                "reactions:write",
+                "search:read.files",
+                "search:read.im",
+                "search:read.mpim",
+                "search:read.private",
+                "search:read.public",
+                "search:read.users",
+                "team:read",
+                "users.profile:read",
+                "users:read",
+                "users:read.email"
+            ]
+        }
+    },
+    "settings": {
+        "org_deploy_enabled": false,
+        "socket_mode_enabled": false,
+        "token_rotation_enabled": false
+    }
+}

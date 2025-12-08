@@ -18,19 +18,29 @@ Custom MCP (Model Context Protocol) server for managing Slack messages at Auxia.
 1. Go to https://api.slack.com/apps
 2. Click **"Create New App"** → **"From scratch"**
 3. Name it (e.g., "Personal Assistant") and select **Auxia workspace**
-4. Add **Bot Token Scopes** (OAuth & Permissions):
+4. Add **User Token Scopes** (OAuth & Permissions → User Token Scopes):
    - `channels:history` - Read messages in public channels
    - `channels:read` - View basic channel info
    - `chat:write` - Send messages
    - `groups:history` - Read messages in private channels
+   - `groups:read` - List private channels
    - `im:history` - Read direct messages
    - `im:read` - View DM info
+   - `im:write` - Send DMs
    - `mpim:history` - Read group DMs
    - `mpim:read` - View group DM info
+   - `mpim:write` - Send group DMs
+   - `reactions:read` - View reactions
    - `reactions:write` - Add emoji reactions
+   - `search:read` - Search messages
+   - `team:read` - Workspace info
    - `users:read` - View user information
+   - `users:read.email` - View user emails
+   - `users.profile:read` - View user profiles
 5. Click **"Install to Workspace"** and authorize
-6. **Copy the Bot User OAuth Token** (starts with `xoxb-`)
+6. **Copy the User OAuth Token** (starts with `xoxp-`)
+
+**Tip:** A sample Slack app manifest is available at `slack-app-manifest.json` for reference.
 
 ### 2. Get Your User ID
 
@@ -51,7 +61,7 @@ Find your Slack User ID (starts with `U`):
 ### 1. Install Dependencies
 
 ```bash
-cd tools/mcp-servers/slack-message-manager
+cd slack-mcp
 npm install
 ```
 
@@ -63,21 +73,22 @@ npm run build
 
 ### 3. Configure Claude Code
 
-Edit your `~/.claude/mcp_config.json` file:
+Edit your `~/.claude.json` file to add the MCP server under your project's `mcpServers` section:
 
 ```json
 {
-  "mcpServers": {
-    "linear": {
-      "command": "npx",
-      "args": ["-y", "mcp-remote", "https://mcp.linear.app/mcp"]
-    },
-    "slack-auxia": {
-      "command": "node",
-      "args": ["/Users/YOUR_USERNAME/projects/source/tools/mcp-servers/slack-message-manager/build/index.js"],
-      "env": {
-        "SLACK_BOT_TOKEN": "xoxb-your-bot-token-here",
-        "SLACK_USER_ID": "U01234567"
+  "projects": {
+    "/path/to/your/project": {
+      "mcpServers": {
+        "slack-auxia": {
+          "type": "stdio",
+          "command": "node",
+          "args": ["/path/to/mcp-servers/slack-mcp/build/index.js"],
+          "env": {
+            "SLACK_BOT_TOKEN": "xoxp-your-user-token-here",
+            "SLACK_USER_ID": "U01234567"
+          }
+        }
       }
     }
   }
@@ -85,10 +96,19 @@ Edit your `~/.claude/mcp_config.json` file:
 ```
 
 **Important:**
-- Replace `YOUR_USERNAME` with your actual macOS username
-- Replace `xoxb-your-bot-token-here` with your actual bot token
+- Replace `/path/to/your/project` with your actual project path
+- Replace `/path/to/mcp-servers/` with where you cloned this repo
+- Replace `xoxp-your-user-token-here` with your **user token** (see note below)
 - Replace `U01234567` with your actual Slack user ID
 - This file is in your home directory and is **never checked into git**
+
+**Note on Token Types:**
+| Token Type | Prefix | Access Level |
+|------------|--------|--------------|
+| Bot Token | `xoxb-` | Only channels where bot is invited |
+| **User Token** | `xoxp-` | Full access to your DMs and all channels you're in |
+
+For full functionality (especially reading DMs), use a **user token** (`xoxp-`) from your Slack app's OAuth settings.
 
 ### 4. Restart Claude Code
 
@@ -217,7 +237,7 @@ The server communicates via stdio, so you'll need to send JSON-RPC messages to t
 
 ### "SLACK_BOT_TOKEN environment variable is required"
 
-Make sure you've added the `env` section to your `~/.claude/mcp_config.json` with your bot token.
+Make sure you've added the `env` section to your `~/.claude.json` with your token.
 
 ### "Missing scope" errors
 
