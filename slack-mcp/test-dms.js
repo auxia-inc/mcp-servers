@@ -1,6 +1,6 @@
 const { WebClient } = require('@slack/web-api');
 
-const token = process.env.SLACK_BOT_TOKEN;
+const token = process.env.SLACK_USER_TOKEN;
 const userId = process.env.SLACK_USER_ID;
 
 console.log('Using user ID:', userId);

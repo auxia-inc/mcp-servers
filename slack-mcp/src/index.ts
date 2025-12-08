@@ -9,15 +9,15 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { SlackMessageClient } from './slack-client.js';
 
-const SLACK_BOT_TOKEN = process.env.SLACK_BOT_TOKEN;
+const SLACK_USER_TOKEN = process.env.SLACK_USER_TOKEN;
 const SLACK_USER_ID = process.env.SLACK_USER_ID;
 
-if (!SLACK_BOT_TOKEN || !SLACK_USER_ID) {
-  console.error('Error: SLACK_BOT_TOKEN and SLACK_USER_ID environment variables are required');
+if (!SLACK_USER_TOKEN || !SLACK_USER_ID) {
+  console.error('Error: SLACK_USER_TOKEN and SLACK_USER_ID environment variables are required');
   process.exit(1);
 }
 
-const slackClient = new SlackMessageClient(SLACK_BOT_TOKEN, SLACK_USER_ID);
+const slackClient = new SlackMessageClient(SLACK_USER_TOKEN, SLACK_USER_ID);
 
 const TOOLS: Tool[] = [
   {

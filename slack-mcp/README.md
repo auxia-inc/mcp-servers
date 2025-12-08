@@ -53,7 +53,7 @@ Find your Slack User ID (starts with `U`):
 
 **Option B: Via API Test**
 1. Go to https://api.slack.com/methods/auth.test/test
-2. Use your bot token
+2. Use your user token
 3. Look for `user_id` in the response
 
 ## Installation
@@ -85,7 +85,7 @@ Edit your `~/.claude.json` file to add the MCP server under your project's `mcpS
           "command": "node",
           "args": ["/path/to/mcp-servers/slack-mcp/build/index.js"],
           "env": {
-            "SLACK_BOT_TOKEN": "xoxp-your-user-token-here",
+            "SLACK_USER_TOKEN": "xoxp-your-user-token-here",
             "SLACK_USER_ID": "U01234567"
           }
         }
@@ -102,13 +102,7 @@ Edit your `~/.claude.json` file to add the MCP server under your project's `mcpS
 - Replace `U01234567` with your actual Slack user ID
 - This file is in your home directory and is **never checked into git**
 
-**Note on Token Types:**
-| Token Type | Prefix | Access Level |
-|------------|--------|--------------|
-| Bot Token | `xoxb-` | Only channels where bot is invited |
-| **User Token** | `xoxp-` | Full access to your DMs and all channels you're in |
-
-For full functionality (especially reading DMs), use a **user token** (`xoxp-`) from your Slack app's OAuth settings.
+**Note:** This MCP server requires a **user token** (`xoxp-`) for full functionality, including reading your DMs and all channels you're in. Bot tokens (`xoxb-`) have limited access and are not recommended.
 
 ### 4. Restart Claude Code
 
@@ -235,20 +229,13 @@ The server communicates via stdio, so you'll need to send JSON-RPC messages to t
 
 ## Troubleshooting
 
-### "SLACK_BOT_TOKEN environment variable is required"
+### "SLACK_USER_TOKEN environment variable is required"
 
-Make sure you've added the `env` section to your `~/.claude.json` with your token.
+Make sure you've added the `env` section to your `~/.claude.json` with your user token.
 
 ### "Missing scope" errors
 
-Go back to your Slack app settings and add the missing OAuth scopes under "OAuth & Permissions".
-
-### Can't see messages
-
-Make sure your bot has been invited to the channels you want to read from. In Slack, type:
-```
-/invite @YourBotName
-```
+Go back to your Slack app settings and add the missing OAuth scopes under "OAuth & Permissions" → "User Token Scopes".
 
 ### Changes not taking effect
 
@@ -257,17 +244,17 @@ Make sure your bot has been invited to the channels you want to read from. In Sl
 
 ## Security Notes
 
-- **Never commit your bot token** - it stays in your personal `~/.claude/mcp_config.json`
-- Each team member needs their own Slack app with their own token
-- The bot token has limited permissions (only what you granted in scopes)
-- Messages are only accessible to the user who created the bot token
+- **Never commit your user token** - it stays in your personal `~/.claude.json`
+- Each team member needs their own Slack app with their own user token
+- The user token has permissions based on the scopes you granted
+- Messages are only accessible to the user who created the token
 
 ## For Team Members
 
 1. Follow the "Prerequisites" section to create your own Slack app
-2. Get your own bot token and user ID
+2. Get your own user token and user ID
 3. Install dependencies and build the project
-4. Configure your personal `~/.claude/mcp_config.json` with your credentials
+4. Configure your personal `~/.claude.json` with your credentials
 5. Restart Claude Code
 
 Each team member uses their own credentials - nothing is shared or checked into git.
