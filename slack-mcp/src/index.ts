@@ -8,16 +8,55 @@ import {
   Tool,
 } from '@modelcontextprotocol/sdk/types.js';
 import { SlackMessageClient } from './slack-client.js';
+import fs from 'fs';
+import path from 'path';
 
-const SLACK_USER_TOKEN = process.env.SLACK_USER_TOKEN;
-const SLACK_USER_ID = process.env.SLACK_USER_ID;
+interface SlackTokenData {
+  user_token: string;
+  user_id: string;
+  scopes?: string;
+  team_id?: string;
+  team_name?: string;
+  created_at?: string;
+}
 
-if (!SLACK_USER_TOKEN || !SLACK_USER_ID) {
-  console.error('Error: SLACK_USER_TOKEN and SLACK_USER_ID environment variables are required');
+function loadCredentials(): { token: string; userId: string } {
+  // First try environment variables (for backwards compatibility)
+  if (process.env.SLACK_USER_TOKEN && process.env.SLACK_USER_ID) {
+    return {
+      token: process.env.SLACK_USER_TOKEN,
+      userId: process.env.SLACK_USER_ID,
+    };
+  }
+
+  // Then try token file
+  const tokenPath = process.env.SLACK_TOKEN_PATH ||
+    path.join(process.env.HOME || '', 'Claude', '.security', 'slack-token.json');
+
+  if (fs.existsSync(tokenPath)) {
+    try {
+      const tokenData: SlackTokenData = JSON.parse(fs.readFileSync(tokenPath, 'utf-8'));
+      if (tokenData.user_token && tokenData.user_id) {
+        return {
+          token: tokenData.user_token,
+          userId: tokenData.user_id,
+        };
+      }
+    } catch (error) {
+      console.error(`Error reading token file: ${error}`);
+    }
+  }
+
+  console.error('Error: Slack credentials not found.');
+  console.error('\nTo authenticate, run:');
+  console.error('  cd ~/projects/mcp-servers/slack-mcp && npm run auth');
+  console.error('\nOr set environment variables:');
+  console.error('  SLACK_USER_TOKEN and SLACK_USER_ID');
   process.exit(1);
 }
 
-const slackClient = new SlackMessageClient(SLACK_USER_TOKEN, SLACK_USER_ID);
+const { token, userId } = loadCredentials();
+const slackClient = new SlackMessageClient(token, userId);
 
 const TOOLS: Tool[] = [
   {
