@@ -918,6 +918,60 @@ export class GoogleDriveClient {
     }
   }
 
+  async updateFileContent(
+    fileId: string,
+    localPath: string
+  ): Promise<DriveFile> {
+    if (!this.drive) {
+      throw new Error('Google Drive client not initialized');
+    }
+
+    try {
+      // Read file from local path
+      if (!fs.existsSync(localPath)) {
+        throw new Error(`File not found: ${localPath}`);
+      }
+
+      // Detect MIME type based on extension
+      const ext = path.extname(localPath).toLowerCase();
+      const mimeTypes: { [key: string]: string } = {
+        '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+        '.pdf': 'application/pdf',
+        '.txt': 'text/plain',
+        '.csv': 'text/csv',
+        '.json': 'application/json',
+        '.png': 'image/png',
+        '.jpg': 'image/jpeg',
+        '.jpeg': 'image/jpeg',
+        '.gif': 'image/gif',
+        '.md': 'text/markdown',
+      };
+
+      const mimeType = mimeTypes[ext] || 'application/octet-stream';
+
+      // Create a read stream for the file
+      const fileStream = fs.createReadStream(localPath);
+
+      // Update file content using Drive API files.update with media
+      const response = await this.drive.files.update({
+        fileId,
+        media: {
+          mimeType,
+          body: fileStream,
+        },
+        fields: 'id, name, mimeType, webViewLink, modifiedTime',
+        supportsAllDrives: true,
+      });
+
+      return response.data;
+    } catch (error) {
+      console.error('Error updating file content:', error);
+      throw error;
+    }
+  }
+
   async createFolder(name: string, parentFolderId?: string): Promise<DriveFile> {
     if (!this.drive) {
       throw new Error('Google Drive client not initialized');

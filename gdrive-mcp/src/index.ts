@@ -507,6 +507,24 @@ const tools: Tool[] = [
     },
   },
   {
+    name: 'update_file_content',
+    description: 'Update the content of an existing Google Drive file with a new local file. Keeps the same file ID and URL - useful for versioning.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        fileId: {
+          type: 'string',
+          description: 'The Google Drive file ID to update',
+        },
+        localPath: {
+          type: 'string',
+          description: 'The absolute path to the local file with new content',
+        },
+      },
+      required: ['fileId', 'localPath'],
+    },
+  },
+  {
     name: 'create_folder',
     description: 'Create a new folder in Google Drive',
     inputSchema: {
@@ -1260,6 +1278,22 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             {
               type: 'text',
               text: JSON.stringify(result, null, 2),
+            },
+          ],
+        };
+      }
+
+      case 'update_file_content': {
+        const { fileId, localPath } = args as {
+          fileId: string;
+          localPath: string;
+        };
+        const result = await driveClient.updateFileContent(fileId, localPath);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `File content updated successfully.\n${JSON.stringify(result, null, 2)}`,
             },
           ],
         };
