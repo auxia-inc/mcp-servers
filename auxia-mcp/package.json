@@ -1,6 +1,6 @@
 {
   "name": "@auxia/mcp",
-  "version": "0.2.0",
+  "version": "0.2.2",
   "description": "MCP server for Auxia Console - enables Claude to manage treatments and projects",
   "main": "build/index.js",
   "types": "build/index.d.ts",
@@ -41,7 +41,7 @@
     "clean": "rm -rf build"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "1.23.0",
+    "@modelcontextprotocol/sdk": "^1.24.3",
     "open": "^10.1.0"
   },
   "devDependencies": {
