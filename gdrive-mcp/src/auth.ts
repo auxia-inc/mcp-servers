@@ -7,36 +7,32 @@ import path from 'path';
 import http from 'http';
 import { URL } from 'url';
 import open from 'open';
+import { DEFAULT_CREDENTIALS } from './credentials.js';
 
 const SCOPES = [
   'https://www.googleapis.com/auth/drive',
 ];
 
-const credentialsPath = process.env.GOOGLE_CREDENTIALS_PATH ||
-                       path.join(process.env.HOME || '', 'Claude', 'gdrive-credentials.json');
 const tokenPath = process.env.GOOGLE_TOKEN_PATH ||
-                 path.join(process.env.HOME || '', 'Claude', 'gdrive-token.json');
+                 path.join(process.env.HOME || '', 'Claude', '.security', 'gdrive-token.json');
 
 async function authenticate() {
   try {
-    // Load credentials
-    if (!fs.existsSync(credentialsPath)) {
-      console.error(`Credentials file not found: ${credentialsPath}`);
-      console.error('\nPlease create this file with your OAuth2 credentials:');
-      console.error(JSON.stringify({
-        client_id: 'YOUR_CLIENT_ID',
-        client_secret: 'YOUR_CLIENT_SECRET',
-        redirect_uri: 'http://localhost:3000/oauth2callback',
-      }, null, 2));
-      process.exit(1);
-    }
+    // Use embedded credentials (can be overridden with env var or file)
+    let credentials = DEFAULT_CREDENTIALS;
 
-    const credentials = JSON.parse(fs.readFileSync(credentialsPath, 'utf-8'));
+    const credentialsPath = process.env.GOOGLE_CREDENTIALS_PATH ||
+                           path.join(process.env.HOME || '', 'Claude', 'gdrive-credentials.json');
+
+    if (fs.existsSync(credentialsPath)) {
+      // Override with custom credentials if file exists
+      credentials = JSON.parse(fs.readFileSync(credentialsPath, 'utf-8'));
+    }
 
     const oauth2Client = new google.auth.OAuth2(
       credentials.client_id,
       credentials.client_secret,
-      credentials.redirect_uri || 'http://localhost:3000/oauth2callback'
+      credentials.redirect_uri || 'http://localhost:3035/oauth2callback'
     );
 
     // Generate auth URL
@@ -65,6 +61,12 @@ async function authenticate() {
             // Exchange code for token
             const { tokens } = await oauth2Client.getToken(code);
 
+            // Ensure .security directory exists
+            const securityDir = path.dirname(tokenPath);
+            if (!fs.existsSync(securityDir)) {
+              fs.mkdirSync(securityDir, { recursive: true });
+            }
+
             // Save token
             fs.writeFileSync(tokenPath, JSON.stringify(tokens, null, 2));
 
@@ -90,8 +92,8 @@ async function authenticate() {
       }
     });
 
-    server.listen(3000, () => {
-      console.log('Local server started on http://localhost:3000');
+    server.listen(3035, () => {
+      console.log('Local server started on http://localhost:3035');
       console.log('Waiting for authorization...\n');
 
       // Try to open browser

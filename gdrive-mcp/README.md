@@ -33,36 +33,7 @@ A Model Context Protocol (MCP) server for accessing Google Drive files from Clau
 
 ## Setup
 
-### 1. Create Google Cloud Project and OAuth Credentials
-
-1. Go to [Google Cloud Console](https://console.cloud.google.com/)
-2. Create a new project or select an existing one
-3. Enable the Google Drive API:
-   - Go to "APIs & Services" > "Library"
-   - Search for "Google Drive API"
-   - Click "Enable"
-4. Enable the Google Sheets API (for Sheets functionality):
-   - Search for "Google Sheets API"
-   - Click "Enable"
-5. Create OAuth 2.0 credentials:
-   - Go to "APIs & Services" > "Credentials"
-   - Click "Create Credentials" > "OAuth client ID"
-   - Choose "Desktop app" as application type
-   - Download the credentials JSON file
-
-### 2. Save Credentials
-
-Save the downloaded credentials file to `~/Claude/gdrive-credentials.json`:
-
-```json
-{
-  "client_id": "YOUR_CLIENT_ID",
-  "client_secret": "YOUR_CLIENT_SECRET",
-  "redirect_uri": "http://localhost:3000/oauth2callback"
-}
-```
-
-### 3. Install Dependencies and Build
+### 1. Install Dependencies and Build
 
 ```bash
 cd gdrive-mcp
@@ -70,7 +41,7 @@ npm install
 npm run build
 ```
 
-### 4. Authenticate
+### 2. Authenticate
 
 Run the authentication helper script:
 
@@ -80,9 +51,9 @@ npm run auth
 
 This will:
 1. Open your browser to authorize the app
-2. Save the access token to `~/Claude/gdrive-token.json`
+2. Save the access token to `~/Claude/.security/gdrive-token.json`
 
-### 5. Configure Claude Code
+### 3. Configure Claude Code
 
 Add to your `~/.claude.json` at the global level (root `mcpServers`):
 
@@ -217,20 +188,13 @@ Then restart Claude Code to load the server.
 
 Run `npm run auth` to authenticate and generate a token.
 
-### "Google credentials not found"
-
-Ensure `~/Claude/gdrive-credentials.json` exists with your OAuth credentials.
-
 ### Token expired
 
-Delete `~/Claude/gdrive-token.json` and run `npm run auth` again.
-
-### Permission errors
-
-Make sure you enabled both Google Drive API and Google Sheets API in your Google Cloud project.
+Delete `~/Claude/.security/gdrive-token.json` and run `npm run auth` again.
 
 ## Security Notes
 
-- **Never commit your credentials or tokens** - they stay in your personal `~/Claude/` directory
-- Each team member needs their own Google Cloud project and OAuth credentials
-- The token has permissions based on the scopes granted during authentication
+- **Never commit your token file** (`~/Claude/.security/gdrive-token.json`) - it contains your personal access credentials
+- The embedded OAuth client ID/secret only identify the application, not any user data
+- Each user authenticates with their own Google account and only sees files they have access to
+- You can override the default credentials by creating `~/Claude/gdrive-credentials.json` if needed

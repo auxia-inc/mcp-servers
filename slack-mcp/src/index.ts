@@ -217,6 +217,94 @@ const TOOLS: Tool[] = [
       },
       required: ['channelId', 'timestamp']
     }
+  },
+  {
+    name: 'get_channel_members',
+    description: 'Get all members of a channel. Returns user details for each member.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        channelId: {
+          type: 'string',
+          description: 'Channel ID to get members from'
+        }
+      },
+      required: ['channelId']
+    }
+  },
+  {
+    name: 'invite_to_channel',
+    description: 'Invite users to a channel. Can invite by user IDs, or copy members from a usergroup.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        channelId: {
+          type: 'string',
+          description: 'Channel ID to invite users to'
+        },
+        userIds: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Array of user IDs to invite'
+        },
+        fromUsergroup: {
+          type: 'string',
+          description: 'Usergroup ID or handle to copy members from (alternative to userIds)'
+        },
+        fromChannel: {
+          type: 'string',
+          description: 'Channel ID to copy members from (alternative to userIds)'
+        }
+      },
+      required: ['channelId']
+    }
+  },
+  {
+    name: 'list_usergroups',
+    description: 'List all usergroups in the workspace.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        includeUsers: {
+          type: 'boolean',
+          description: 'Include user IDs in the response (default: false)',
+          default: false
+        }
+      }
+    }
+  },
+  {
+    name: 'get_usergroup_members',
+    description: 'Get all members of a usergroup.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        usergroupId: {
+          type: 'string',
+          description: 'Usergroup ID or handle (e.g., "S12345" or "engineering")'
+        }
+      },
+      required: ['usergroupId']
+    }
+  },
+  {
+    name: 'update_usergroup_members',
+    description: 'Update the members of a usergroup. This replaces all current members.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        usergroupId: {
+          type: 'string',
+          description: 'Usergroup ID or handle'
+        },
+        userIds: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Array of user IDs to set as members'
+        }
+      },
+      required: ['usergroupId', 'userIds']
+    }
   }
 ];
 
@@ -371,6 +459,114 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
         return {
           content: [{ type: 'text', text: 'Message deleted successfully' }]
+        };
+      }
+
+      case 'get_channel_members': {
+        const members = await slackClient.getChannelMembers(args?.channelId as string);
+        return {
+          content: [{ type: 'text', text: slackClient.formatUsersCompact(members) }]
+        };
+      }
+
+      case 'invite_to_channel': {
+        const channelId = args?.channelId as string;
+        let userIds: string[] = args?.userIds as string[] || [];
+
+        // If fromUsergroup specified, get those members
+        if (args?.fromUsergroup) {
+          const usergroup = await slackClient.findUsergroup(args.fromUsergroup as string);
+          if (!usergroup) {
+            return {
+              content: [{ type: 'text', text: `Usergroup not found: ${args.fromUsergroup}` }],
+              isError: true
+            };
+          }
+          const members = await slackClient.getUsergroupMembers(usergroup.id);
+          userIds = [...userIds, ...members.map(m => m.id)];
+        }
+
+        // If fromChannel specified, get those members
+        if (args?.fromChannel) {
+          const members = await slackClient.getChannelMembers(args.fromChannel as string);
+          userIds = [...userIds, ...members.map(m => m.id)];
+        }
+
+        if (userIds.length === 0) {
+          return {
+            content: [{ type: 'text', text: 'No users specified to invite' }],
+            isError: true
+          };
+        }
+
+        // Deduplicate
+        userIds = [...new Set(userIds)];
+
+        const result = await slackClient.inviteToChannel(channelId, userIds);
+        if (!result.success) {
+          return {
+            content: [{ type: 'text', text: `Failed to invite users: ${result.error}` }],
+            isError: true
+          };
+        }
+
+        let message = `Successfully invited ${result.invited} user(s) to channel`;
+        if (result.alreadyMembers > 0) {
+          message += ` (${result.alreadyMembers} already members)`;
+        }
+        return {
+          content: [{ type: 'text', text: message }]
+        };
+      }
+
+      case 'list_usergroups': {
+        const usergroups = await slackClient.listUsergroups({
+          includeUsers: args?.includeUsers as boolean
+        });
+        return {
+          content: [{ type: 'text', text: slackClient.formatUsergroupsCompact(usergroups) }]
+        };
+      }
+
+      case 'get_usergroup_members': {
+        const usergroupQuery = args?.usergroupId as string;
+        const usergroup = await slackClient.findUsergroup(usergroupQuery);
+        if (!usergroup) {
+          return {
+            content: [{ type: 'text', text: `Usergroup not found: ${usergroupQuery}` }],
+            isError: true
+          };
+        }
+        const members = await slackClient.getUsergroupMembers(usergroup.id);
+        return {
+          content: [{ type: 'text', text: `Members of @${usergroup.handle}:\n\n${slackClient.formatUsersCompact(members)}` }]
+        };
+      }
+
+      case 'update_usergroup_members': {
+        const usergroupQuery = args?.usergroupId as string;
+        const usergroup = await slackClient.findUsergroup(usergroupQuery);
+        if (!usergroup) {
+          return {
+            content: [{ type: 'text', text: `Usergroup not found: ${usergroupQuery}` }],
+            isError: true
+          };
+        }
+
+        const result = await slackClient.updateUsergroupMembers(
+          usergroup.id,
+          args?.userIds as string[]
+        );
+
+        if (!result.success) {
+          return {
+            content: [{ type: 'text', text: `Failed to update usergroup members: ${result.error}` }],
+            isError: true
+          };
+        }
+
+        return {
+          content: [{ type: 'text', text: `Successfully updated members of @${usergroup.handle}` }]
         };
       }
 

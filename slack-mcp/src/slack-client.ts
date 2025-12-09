@@ -35,6 +35,15 @@ export interface SlackUser {
   isDeleted: boolean;
 }
 
+export interface SlackUsergroup {
+  id: string;
+  name: string;
+  handle: string;
+  description: string;
+  userCount: number;
+  users?: string[];
+}
+
 export class SlackMessageClient {
   private client: WebClient;
   private userId: string;
@@ -246,6 +255,135 @@ export class SlackMessageClient {
     } catch (error) {
       return channelId;
     }
+  }
+
+  async getChannelMembers(channelId: string): Promise<SlackUser[]> {
+    const memberIds: string[] = [];
+    let cursor: string | undefined = undefined;
+
+    do {
+      const result = await this.client.conversations.members({
+        channel: channelId,
+        limit: 200,
+        cursor
+      });
+      memberIds.push(...(result.members || []));
+      cursor = result.response_metadata?.next_cursor;
+    } while (cursor);
+
+    // Resolve user details for each member
+    const users: SlackUser[] = [];
+    for (const memberId of memberIds) {
+      const user = await this.findUser(memberId);
+      if (user && !user.isBot && !user.isDeleted) {
+        users.push(user);
+      }
+    }
+    return users;
+  }
+
+  async inviteToChannel(channelId: string, userIds: string[]): Promise<{ success: boolean; invited: number; alreadyMembers: number; error?: string }> {
+    try {
+      // Get current members of the channel to filter out
+      const currentMemberIds: string[] = [];
+      let cursor: string | undefined = undefined;
+      do {
+        const result = await this.client.conversations.members({
+          channel: channelId,
+          limit: 200,
+          cursor
+        });
+        currentMemberIds.push(...(result.members || []));
+        cursor = result.response_metadata?.next_cursor;
+      } while (cursor);
+
+      const currentMemberSet = new Set(currentMemberIds);
+      const toInvite = userIds.filter(id => !currentMemberSet.has(id));
+      const alreadyMembers = userIds.length - toInvite.length;
+
+      if (toInvite.length === 0) {
+        return { success: true, invited: 0, alreadyMembers };
+      }
+
+      await this.client.conversations.invite({
+        channel: channelId,
+        users: toInvite.join(',')
+      });
+      return { success: true, invited: toInvite.length, alreadyMembers };
+    } catch (error: any) {
+      return { success: false, invited: 0, alreadyMembers: 0, error: error?.data?.error || String(error) };
+    }
+  }
+
+  // ============================================
+  // USERGROUP OPERATIONS
+  // ============================================
+
+  async listUsergroups(options: { includeUsers?: boolean } = {}): Promise<SlackUsergroup[]> {
+    const { includeUsers = false } = options;
+    const result = await this.client.usergroups.list({
+      include_users: includeUsers,
+      include_disabled: false
+    });
+
+    return (result.usergroups || []).map((ug: any) => ({
+      id: ug.id!,
+      name: ug.name!,
+      handle: ug.handle!,
+      description: ug.description || '',
+      userCount: ug.user_count || (ug.users?.length || 0),
+      users: ug.users
+    }));
+  }
+
+  async getUsergroupMembers(usergroupId: string): Promise<SlackUser[]> {
+    const result = await this.client.usergroups.users.list({
+      usergroup: usergroupId
+    });
+
+    const users: SlackUser[] = [];
+    for (const userId of result.users || []) {
+      const user = await this.findUser(userId);
+      if (user) users.push(user);
+    }
+    return users;
+  }
+
+  async updateUsergroupMembers(usergroupId: string, userIds: string[]): Promise<{ success: boolean; error?: string }> {
+    try {
+      await this.client.usergroups.users.update({
+        usergroup: usergroupId,
+        users: userIds.join(',')
+      });
+      return { success: true };
+    } catch (error: any) {
+      return { success: false, error: error?.data?.error || String(error) };
+    }
+  }
+
+  async findUsergroup(query: string): Promise<SlackUsergroup | null> {
+    const usergroups = await this.listUsergroups();
+    const q = query.toLowerCase();
+    return usergroups.find(ug =>
+      ug.id.toLowerCase() === q ||
+      ug.handle.toLowerCase() === q ||
+      ug.name.toLowerCase().includes(q)
+    ) || null;
+  }
+
+  formatUsergroupsCompact(usergroups: SlackUsergroup[]): string {
+    if (usergroups.length === 0) {
+      return 'No usergroups found.';
+    }
+
+    let result = `Found ${usergroups.length} usergroup(s):\n\n`;
+    for (const ug of usergroups) {
+      result += `- ${ug.name} (@${ug.handle})\n`;
+      result += `  ID: ${ug.id}\n`;
+      result += `  Members: ${ug.userCount}\n`;
+      if (ug.description) result += `  Description: ${ug.description}\n`;
+    }
+    return result;
   }
 
   // ============================================

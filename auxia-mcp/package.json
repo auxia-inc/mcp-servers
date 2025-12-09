@@ -1,0 +1,62 @@
+{
+  "name": "@auxia/mcp",
+  "version": "0.2.0",
+  "description": "MCP server for Auxia Console - enables Claude to manage treatments and projects",
+  "main": "build/index.js",
+  "types": "build/index.d.ts",
+  "bin": {
+    "auxia-mcp": "build/index.js"
+  },
+  "type": "module",
+  "exports": {
+    ".": {
+      "import": "./build/index.js",
+      "types": "./build/index.d.ts"
+    },
+    "./server": {
+      "import": "./build/server.js",
+      "types": "./build/server.d.ts"
+    },
+    "./tools": {
+      "import": "./build/tools/index.js",
+      "types": "./build/tools/index.d.ts"
+    },
+    "./auth": {
+      "import": "./build/auth.js",
+      "types": "./build/auth.d.ts"
+    },
+    "./bff-client": {
+      "import": "./build/bff-client.js",
+      "types": "./build/bff-client.d.ts"
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc -w",
+    "start": "node build/index.js",
+    "auth": "node build/auth.js",
+    "clean": "rm -rf build"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.23.0",
+    "open": "^10.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "mcp",
+    "auxia",
+    "claude",
+    "ai",
+    "treatments"
+  ],
+  "license": "UNLICENSED"
+}

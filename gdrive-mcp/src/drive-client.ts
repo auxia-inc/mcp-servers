@@ -3,6 +3,7 @@ import { OAuth2Client } from 'google-auth-library';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { DEFAULT_CREDENTIALS } from './credentials.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -107,21 +108,20 @@ export class GoogleDriveClient {
 
   private async initializeAuth() {
     try {
-      // Look for credentials in environment variable or file
+      // Use embedded credentials (can be overridden with env var or file)
+      let credentials = DEFAULT_CREDENTIALS;
+
       const credentialsPath = process.env.GOOGLE_CREDENTIALS_PATH ||
                              path.join(process.env.HOME || '', 'Claude', 'gdrive-credentials.json');
 
-      if (!fs.existsSync(credentialsPath)) {
-        throw new Error(
-          `Google credentials not found. Please create ${credentialsPath} with OAuth2 credentials.`
-        );
+      if (fs.existsSync(credentialsPath)) {
+        // Override with custom credentials if file exists
+        credentials = JSON.parse(fs.readFileSync(credentialsPath, 'utf-8'));
       }
-
-      const credentials = JSON.parse(fs.readFileSync(credentialsPath, 'utf-8'));
 
       // Check if we have a token file
       const tokenPath = process.env.GOOGLE_TOKEN_PATH ||
-                       path.join(process.env.HOME || '', 'Claude', 'gdrive-token.json');
+                       path.join(process.env.HOME || '', 'Claude', '.security', 'gdrive-token.json');
 
       let token = null;
       if (fs.existsSync(tokenPath)) {
@@ -138,9 +138,11 @@ export class GoogleDriveClient {
       if (token) {
         this.auth.setCredentials(token);
       } else {
-        console.error('No token found. Please run authentication flow first.');
-        console.error('Visit the auth URL and save the token to', tokenPath);
-        throw new Error('Authentication required. Token not found.');
+        // __dirname is build/, so go up one level to get project root
+        const projectDir = path.resolve(__dirname, '..');
+        throw new Error(
+          `Google Drive not authenticated. Ask Claude to run: cd ${projectDir} && npm run auth`
+        );
       }
 
       // Initialize Drive API
