@@ -1,0 +1,29 @@
+{
+  "name": "gmail-mcp",
+  "version": "1.0.0",
+  "description": "Gmail MCP Server for Claude Code",
+  "main": "build/index.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch",
+    "prepare": "npm run build",
+    "auth": "tsc && node build/auth.js"
+  },
+  "keywords": [
+    "mcp",
+    "gmail",
+    "model-context-protocol"
+  ],
+  "author": "Ravi Desu",
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.24.3",
+    "googleapis": "^144.0.0",
+    "open": "^10.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.0.0"
+  }
+}
