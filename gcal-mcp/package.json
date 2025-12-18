@@ -1,0 +1,29 @@
+{
+  "name": "gcal-mcp",
+  "version": "1.0.0",
+  "description": "Google Calendar MCP server with auto-popup OAuth",
+  "type": "module",
+  "main": "build/index.js",
+  "bin": {
+    "gcal-mcp": "./build/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node build/index.js",
+    "dev": "tsc -w",
+    "auth": "node build/auth.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "google-auth-library": "^9.15.1",
+    "googleapis": "^144.0.0",
+    "open": "^10.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
