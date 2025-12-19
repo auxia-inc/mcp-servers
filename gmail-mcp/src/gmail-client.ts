@@ -1,12 +1,6 @@
 import { google, gmail_v1 } from 'googleapis';
 import { OAuth2Client } from 'google-auth-library';
-import fs from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
-import { DEFAULT_CREDENTIALS } from './credentials.js';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+import { getAuthenticatedClient, clearToken, performOAuthFlow } from './auth.js';
 
 // ========== Interfaces ==========
 
@@ -75,56 +69,92 @@ export class GmailClient {
   private auth: OAuth2Client | null = null;
   private gmail: gmail_v1.Gmail | null = null;
   private userEmail: string = 'me';
+  private initPromise: Promise<void> | null = null;
 
   constructor() {
-    this.initializeAuth();
+    // Don't initialize in constructor - we'll do it lazily with auto-popup
   }
 
-  private async initializeAuth() {
-    try {
-      // Use embedded credentials (can be overridden with env var or file)
-      let credentials = DEFAULT_CREDENTIALS;
-
-      const credentialsPath = process.env.GMAIL_CREDENTIALS_PATH ||
-                             path.join(process.env.HOME || '', 'Claude', 'gmail-credentials.json');
-
-      if (fs.existsSync(credentialsPath)) {
-        // Override with custom credentials if file exists
-        credentials = JSON.parse(fs.readFileSync(credentialsPath, 'utf-8'));
-      }
-
-      // Check if we have a token file
-      const tokenPath = process.env.GMAIL_TOKEN_PATH ||
-                       path.join(process.env.HOME || '', 'Claude', '.security', 'gmail-token.json');
-
-      let token = null;
-      if (fs.existsSync(tokenPath)) {
-        token = JSON.parse(fs.readFileSync(tokenPath, 'utf-8'));
-      }
-
-      // Initialize OAuth2 client
-      this.auth = new google.auth.OAuth2(
-        credentials.client_id,
-        credentials.client_secret,
-        credentials.redirect_uri
-      );
-
-      if (token) {
-        this.auth.setCredentials(token);
-      } else {
-        // __dirname is build/, so go up one level to get project root
-        const projectDir = path.resolve(__dirname, '..');
-        throw new Error(
-          `Gmail not authenticated. Run: cd ${projectDir} && npm run auth`
-        );
-      }
-
-      // Initialize Gmail API
-      this.gmail = google.gmail({ version: 'v1', auth: this.auth });
-    } catch (error) {
-      console.error('Failed to initialize Gmail client:', error);
-      throw error;
+  /**
+   * Initializes the client with auto-popup OAuth if needed.
+   * This is called automatically on first API call.
+   */
+  async ensureInitialized(autoPopup: boolean = true): Promise<void> {
+    if (this.gmail) {
+      return;
     }
+
+    // Avoid multiple simultaneous init attempts
+    if (this.initPromise) {
+      return this.initPromise;
+    }
+
+    this.initPromise = this.doInitialize(autoPopup);
+    try {
+      await this.initPromise;
+    } finally {
+      this.initPromise = null;
+    }
+  }
+
+  private async doInitialize(autoPopup: boolean): Promise<void> {
+    const { client, isNewAuth } = await getAuthenticatedClient(autoPopup);
+    this.auth = client;
+    this.gmail = google.gmail({ version: 'v1', auth: this.auth });
+
+    if (isNewAuth) {
+      console.error('Gmail authenticated via browser popup');
+    } else {
+      console.error('Gmail client initialized with existing token');
+    }
+  }
+
+  /**
+   * Force re-authentication (useful when token is invalid)
+   */
+  async reauthenticate(): Promise<void> {
+    clearToken();
+    this.auth = null;
+    this.gmail = null;
+    await this.ensureInitialized(true);
+  }
+
+  /**
+   * Manually authenticate (for MCP tool)
+   */
+  async authenticate(): Promise<{ email?: string; message: string }> {
+    await performOAuthFlow();
+    this.auth = null;
+    this.gmail = null;
+    await this.ensureInitialized(false);
+
+    // Get user email
+    try {
+      const profile = await this.gmail!.users.getProfile({ userId: 'me' });
+      return {
+        email: profile.data.emailAddress ?? undefined,
+        message: 'Authentication successful',
+      };
+    } catch {
+      return { message: 'Authentication successful' };
+    }
+  }
+
+  /**
+   * Log out and clear stored credentials
+   */
+  logout(): { message: string } {
+    clearToken();
+    this.auth = null;
+    this.gmail = null;
+    return { message: 'Logged out successfully. You will need to re-authenticate on next use.' };
+  }
+
+  /**
+   * Check if authenticated
+   */
+  isAuthenticated(): boolean {
+    return this.gmail !== null;
   }
 
   // ========== Helper Methods ==========
@@ -233,12 +263,10 @@ export class GmailClient {
     pageToken?: string;
     includeSpamTrash?: boolean;
   } = {}): Promise<{ messages: GmailMessage[]; nextPageToken?: string }> {
-    if (!this.gmail) {
-      throw new Error('Gmail client not initialized');
-    }
+    await this.ensureInitialized();
 
     try {
-      const response = await this.gmail.users.messages.list({
+      const response = await this.gmail!.users.messages.list({
         userId: this.userEmail,
         q: options.query,
         labelIds: options.labelIds,
@@ -269,12 +297,10 @@ export class GmailClient {
   }
 
   async getMessage(messageId: string, format: 'full' | 'metadata' | 'minimal' = 'full'): Promise<GmailMessage> {
-    if (!this.gmail) {
-      throw new Error('Gmail client not initialized');
-    }
+    await this.ensureInitialized();
 
     try {
-      const response = await this.gmail.users.messages.get({
+      const response = await this.gmail!.users.messages.get({
         userId: this.userEmail,
         id: messageId,
         format,
@@ -301,12 +327,10 @@ export class GmailClient {
     pageToken?: string;
     includeSpamTrash?: boolean;
   } = {}): Promise<{ threads: GmailThread[]; nextPageToken?: string }> {
-    if (!this.gmail) {
-      throw new Error('Gmail client not initialized');
-    }
+    await this.ensureInitialized();
 
     try {
-      const response = await this.gmail.users.threads.list({
+      const response = await this.gmail!.users.threads.list({
         userId: this.userEmail,
         q: options.query,
         labelIds: options.labelIds,
@@ -336,12 +360,10 @@ export class GmailClient {
   }
 
   async getThread(threadId: string): Promise<GmailThread> {
-    if (!this.gmail) {
-      throw new Error('Gmail client not initialized');
-    }
+    await this.ensureInitialized();
 
     try {
-      const response = await this.gmail.users.threads.get({
+      const response = await this.gmail!.users.threads.get({
         userId: this.userEmail,
         id: threadId,
         format: 'full',
@@ -362,9 +384,7 @@ export class GmailClient {
   // ========== Send Operations ==========
 
   async sendMessage(options: SendMessageOptions): Promise<GmailMessage> {
-    if (!this.gmail) {
-      throw new Error('Gmail client not initialized');
-    }
+    await this.ensureInitialized();
 
     try {
       // Build email in RFC 2822 format
@@ -395,7 +415,7 @@ export class GmailClient {
       const email = emailLines.join('\r\n');
       const encodedEmail = this.encodeBase64(email);
 
-      const response = await this.gmail.users.messages.send({
+      const response = await this.gmail!.users.messages.send({
         userId: this.userEmail,
         requestBody: {
           raw: encodedEmail,
@@ -477,12 +497,10 @@ export class GmailClient {
   // ========== Draft Operations ==========
 
   async listDrafts(maxResults: number = 50): Promise<GmailDraft[]> {
-    if (!this.gmail) {
-      throw new Error('Gmail client not initialized');
-    }
+    await this.ensureInitialized();
 
     try {
-      const response = await this.gmail.users.drafts.list({
+      const response = await this.gmail!.users.drafts.list({
         userId: this.userEmail,
         maxResults,
       });
@@ -505,12 +523,10 @@ export class GmailClient {
   }
 
   async getDraft(draftId: string): Promise<GmailDraft> {
-    if (!this.gmail) {
-      throw new Error('Gmail client not initialized');
-    }
+    await this.ensureInitialized();
 
     try {
-      const response = await this.gmail.users.drafts.get({
+      const response = await this.gmail!.users.drafts.get({
         userId: this.userEmail,
         id: draftId,
         format: 'full',
@@ -527,9 +543,7 @@ export class GmailClient {
   }
 
   async createDraft(options: SendMessageOptions): Promise<GmailDraft> {
-    if (!this.gmail) {
-      throw new Error('Gmail client not initialized');
-    }
+    await this.ensureInitialized();
 
     try {
       const contentType = options.isHtml ? 'text/html' : 'text/plain';
@@ -552,7 +566,7 @@ export class GmailClient {
       const email = emailLines.join('\r\n');
       const encodedEmail = this.encodeBase64(email);
 
-      const response = await this.gmail.users.drafts.create({
+      const response = await this.gmail!.users.drafts.create({
         userId: this.userEmail,
         requestBody: {
           message: {
@@ -577,9 +591,7 @@ export class GmailClient {
   }
 
   async updateDraft(draftId: string, options: SendMessageOptions): Promise<GmailDraft> {
-    if (!this.gmail) {
-      throw new Error('Gmail client not initialized');
-    }
+    await this.ensureInitialized();
 
     try {
       const contentType = options.isHtml ? 'text/html' : 'text/plain';
@@ -599,7 +611,7 @@ export class GmailClient {
       const email = emailLines.join('\r\n');
       const encodedEmail = this.encodeBase64(email);
 
-      const response = await this.gmail.users.drafts.update({
+      const response = await this.gmail!.users.drafts.update({
         userId: this.userEmail,
         id: draftId,
         requestBody: {
@@ -625,12 +637,10 @@ export class GmailClient {
   }
 
   async sendDraft(draftId: string): Promise<GmailMessage> {
-    if (!this.gmail) {
-      throw new Error('Gmail client not initialized');
-    }
+    await this.ensureInitialized();
 
     try {
-      const response = await this.gmail.users.drafts.send({
+      const response = await this.gmail!.users.drafts.send({
         userId: this.userEmail,
         requestBody: {
           id: draftId,
@@ -649,12 +659,10 @@ export class GmailClient {
   }
 
   async deleteDraft(draftId: string): Promise<void> {
-    if (!this.gmail) {
-      throw new Error('Gmail client not initialized');
-    }
+    await this.ensureInitialized();
 
     try {
-      await this.gmail.users.drafts.delete({
+      await this.gmail!.users.drafts.delete({
         userId: this.userEmail,
         id: draftId,
       });
@@ -667,12 +675,10 @@ export class GmailClient {
   // ========== Label Operations ==========
 
   async listLabels(): Promise<GmailLabel[]> {
-    if (!this.gmail) {
-      throw new Error('Gmail client not initialized');
-    }
+    await this.ensureInitialized();
 
     try {
-      const response = await this.gmail.users.labels.list({
+      const response = await this.gmail!.users.labels.list({
         userId: this.userEmail,
       });
 
@@ -695,12 +701,10 @@ export class GmailClient {
   }
 
   async getLabel(labelId: string): Promise<GmailLabel> {
-    if (!this.gmail) {
-      throw new Error('Gmail client not initialized');
-    }
+    await this.ensureInitialized();
 
     try {
-      const response = await this.gmail.users.labels.get({
+      const response = await this.gmail!.users.labels.get({
         userId: this.userEmail,
         id: labelId,
       });
@@ -728,9 +732,7 @@ export class GmailClient {
     backgroundColor?: string;
     textColor?: string;
   } = {}): Promise<GmailLabel> {
-    if (!this.gmail) {
-      throw new Error('Gmail client not initialized');
-    }
+    await this.ensureInitialized();
 
     try {
       const requestBody: gmail_v1.Schema$Label = {
@@ -746,7 +748,7 @@ export class GmailClient {
         };
       }
 
-      const response = await this.gmail.users.labels.create({
+      const response = await this.gmail!.users.labels.create({
         userId: this.userEmail,
         requestBody,
       });
@@ -765,12 +767,10 @@ export class GmailClient {
   }
 
   async deleteLabel(labelId: string): Promise<void> {
-    if (!this.gmail) {
-      throw new Error('Gmail client not initialized');
-    }
+    await this.ensureInitialized();
 
     try {
-      await this.gmail.users.labels.delete({
+      await this.gmail!.users.labels.delete({
         userId: this.userEmail,
         id: labelId,
       });
@@ -786,12 +786,10 @@ export class GmailClient {
     addLabelIds?: string[];
     removeLabelIds?: string[];
   }): Promise<GmailMessage> {
-    if (!this.gmail) {
-      throw new Error('Gmail client not initialized');
-    }
+    await this.ensureInitialized();
 
     try {
-      const response = await this.gmail.users.messages.modify({
+      const response = await this.gmail!.users.messages.modify({
         userId: this.userEmail,
         id: messageId,
         requestBody: {
@@ -816,12 +814,10 @@ export class GmailClient {
   }
 
   async trashMessage(messageId: string): Promise<GmailMessage> {
-    if (!this.gmail) {
-      throw new Error('Gmail client not initialized');
-    }
+    await this.ensureInitialized();
 
     try {
-      const response = await this.gmail.users.messages.trash({
+      const response = await this.gmail!.users.messages.trash({
         userId: this.userEmail,
         id: messageId,
       });
@@ -834,12 +830,10 @@ export class GmailClient {
   }
 
   async untrashMessage(messageId: string): Promise<GmailMessage> {
-    if (!this.gmail) {
-      throw new Error('Gmail client not initialized');
-    }
+    await this.ensureInitialized();
 
     try {
-      const response = await this.gmail.users.messages.untrash({
+      const response = await this.gmail!.users.messages.untrash({
         userId: this.userEmail,
         id: messageId,
       });
@@ -852,12 +846,10 @@ export class GmailClient {
   }
 
   async deleteMessage(messageId: string): Promise<void> {
-    if (!this.gmail) {
-      throw new Error('Gmail client not initialized');
-    }
+    await this.ensureInitialized();
 
     try {
-      await this.gmail.users.messages.delete({
+      await this.gmail!.users.messages.delete({
         userId: this.userEmail,
         id: messageId,
       });
@@ -897,12 +889,10 @@ export class GmailClient {
     addLabelIds?: string[];
     removeLabelIds?: string[];
   }): Promise<void> {
-    if (!this.gmail) {
-      throw new Error('Gmail client not initialized');
-    }
+    await this.ensureInitialized();
 
     try {
-      await this.gmail.users.messages.batchModify({
+      await this.gmail!.users.messages.batchModify({
         userId: this.userEmail,
         requestBody: {
           ids: messageIds,
@@ -917,12 +907,10 @@ export class GmailClient {
   }
 
   async batchDelete(messageIds: string[]): Promise<void> {
-    if (!this.gmail) {
-      throw new Error('Gmail client not initialized');
-    }
+    await this.ensureInitialized();
 
     try {
-      await this.gmail.users.messages.batchDelete({
+      await this.gmail!.users.messages.batchDelete({
         userId: this.userEmail,
         requestBody: {
           ids: messageIds,
@@ -937,12 +925,10 @@ export class GmailClient {
   // ========== Attachment Operations ==========
 
   async getAttachment(messageId: string, attachmentId: string): Promise<Buffer> {
-    if (!this.gmail) {
-      throw new Error('Gmail client not initialized');
-    }
+    await this.ensureInitialized();
 
     try {
-      const response = await this.gmail.users.messages.attachments.get({
+      const response = await this.gmail!.users.messages.attachments.get({
         userId: this.userEmail,
         messageId,
         id: attachmentId,
@@ -964,12 +950,10 @@ export class GmailClient {
   // ========== Profile Operations ==========
 
   async getProfile(): Promise<{ emailAddress: string; messagesTotal: number; threadsTotal: number; historyId: string }> {
-    if (!this.gmail) {
-      throw new Error('Gmail client not initialized');
-    }
+    await this.ensureInitialized();
 
     try {
-      const response = await this.gmail.users.getProfile({
+      const response = await this.gmail!.users.getProfile({
         userId: this.userEmail,
       });
 

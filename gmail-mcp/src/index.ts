@@ -672,6 +672,24 @@ const tools: Tool[] = [
       properties: {},
     },
   },
+
+  // ========== Authentication ==========
+  {
+    name: 'authenticate',
+    description: 'Authenticate with Gmail. Opens browser for OAuth. Use this if you need to re-authenticate or switch accounts.',
+    inputSchema: {
+      type: 'object',
+      properties: {},
+    },
+  },
+  {
+    name: 'logout',
+    description: 'Clear stored Gmail credentials. You will need to re-authenticate after this.',
+    inputSchema: {
+      type: 'object',
+      properties: {},
+    },
+  },
 ];
 
 // Handle list_tools request
@@ -1209,6 +1227,29 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           content: [{
             type: 'text',
             text: JSON.stringify(profile, null, 2),
+          }],
+        };
+      }
+
+      // ========== Authentication ==========
+      case 'authenticate': {
+        const result = await gmailClient.authenticate();
+        return {
+          content: [{
+            type: 'text',
+            text: result.email
+              ? `Authentication successful! Signed in as: ${result.email}`
+              : result.message,
+          }],
+        };
+      }
+
+      case 'logout': {
+        const result = gmailClient.logout();
+        return {
+          content: [{
+            type: 'text',
+            text: result.message,
           }],
         };
       }
