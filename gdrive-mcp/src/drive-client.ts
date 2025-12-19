@@ -2,11 +2,12 @@ import { google } from 'googleapis';
 import { OAuth2Client } from 'google-auth-library';
 import fs from 'fs';
 import path from 'path';
-import { fileURLToPath } from 'url';
-import { DEFAULT_CREDENTIALS } from './credentials.js';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+import {
+  getAuthenticatedClient,
+  clearToken,
+  loadStoredToken,
+  performOAuthFlow,
+} from './auth.js';
 
 interface DriveFile {
   id: string;
@@ -97,62 +98,214 @@ interface SharedDrive {
   };
 }
 
+interface DriveActivity {
+  primaryActionDetail?: {
+    create?: object;
+    edit?: object;
+    move?: object;
+    rename?: { oldTitle?: string; newTitle?: string };
+    delete?: object;
+    restore?: object;
+    comment?: {
+      post?: { subtype?: string };
+      assignment?: { subtype?: string; assignedUser?: { knownUser?: { personName?: string } } };
+      suggestion?: { subtype?: string };
+      mentionedUsers?: Array<{ knownUser?: { personName?: string } }>;
+    };
+    permissionChange?: object;
+  };
+  actors?: Array<{
+    user?: {
+      knownUser?: {
+        personName?: string;
+        isCurrentUser?: boolean;
+      };
+    };
+  }>;
+  targets?: Array<{
+    driveItem?: {
+      name?: string;
+      title?: string;
+      mimeType?: string;
+      owner?: { user?: { knownUser?: { personName?: string } } };
+    };
+    fileComment?: {
+      legacyCommentId?: string;
+      legacyDiscussionId?: string;
+      linkToDiscussion?: string;
+      parent?: {
+        name?: string;
+        title?: string;
+      };
+    };
+  }>;
+  timestamp?: string;
+  timeRange?: {
+    startTime?: string;
+    endTime?: string;
+  };
+}
+
 export class GoogleDriveClient {
   private auth: OAuth2Client | null = null;
   private drive: any = null;
   private sheets: any = null;
+  private driveactivity: any = null;
+  private people: any = null;
+  private initPromise: Promise<void> | null = null;
+  private peopleCache: Map<string, string> = new Map(); // Cache people IDs to names
 
   constructor() {
-    this.initializeAuth();
+    // Don't initialize in constructor - we'll do it lazily with auto-popup
   }
 
-  private async initializeAuth() {
+  /**
+   * Ensures the client is initialized, with optional auto-popup OAuth
+   * @param autoPopup - If true, automatically opens browser for auth when needed
+   * @param forceRefresh - If true, re-reads token from disk even if already initialized
+   */
+  async ensureInitialized(autoPopup: boolean = true, forceRefresh: boolean = false): Promise<void> {
+    if (this.drive && !forceRefresh) {
+      return; // Already initialized
+    }
+
+    // If force refresh, reset state
+    if (forceRefresh) {
+      this.auth = null;
+      this.drive = null;
+      this.sheets = null;
+      this.driveactivity = null;
+      this.people = null;
+    }
+
+    // If initialization is in progress, wait for it
+    if (this.initPromise) {
+      return this.initPromise;
+    }
+
+    // Start initialization
+    this.initPromise = this.doInitialize(autoPopup);
     try {
-      // Use embedded credentials (can be overridden with env var or file)
-      let credentials = DEFAULT_CREDENTIALS;
+      await this.initPromise;
+    } finally {
+      this.initPromise = null;
+    }
+  }
 
-      const credentialsPath = process.env.GOOGLE_CREDENTIALS_PATH ||
-                             path.join(process.env.HOME || '', 'Claude', 'gdrive-credentials.json');
+  /**
+   * Performs actual initialization
+   */
+  private async doInitialize(autoPopup: boolean): Promise<void> {
+    try {
+      const { client, isNewAuth } = await getAuthenticatedClient(autoPopup);
+      this.auth = client;
 
-      if (fs.existsSync(credentialsPath)) {
-        // Override with custom credentials if file exists
-        credentials = JSON.parse(fs.readFileSync(credentialsPath, 'utf-8'));
-      }
-
-      // Check if we have a token file
-      const tokenPath = process.env.GOOGLE_TOKEN_PATH ||
-                       path.join(process.env.HOME || '', 'Claude', '.security', 'gdrive-token.json');
-
-      let token = null;
-      if (fs.existsSync(tokenPath)) {
-        token = JSON.parse(fs.readFileSync(tokenPath, 'utf-8'));
-      }
-
-      // Initialize OAuth2 client
-      this.auth = new google.auth.OAuth2(
-        credentials.client_id,
-        credentials.client_secret,
-        credentials.redirect_uri
-      );
-
-      if (token) {
-        this.auth.setCredentials(token);
-      } else {
-        // __dirname is build/, so go up one level to get project root
-        const projectDir = path.resolve(__dirname, '..');
-        throw new Error(
-          `Google Drive not authenticated. Ask Claude to run: cd ${projectDir} && npm run auth`
-        );
+      if (isNewAuth) {
+        console.error('Successfully authenticated with Google Drive');
       }
 
       // Initialize Drive API
       this.drive = google.drive({ version: 'v3', auth: this.auth });
       // Initialize Sheets API
       this.sheets = google.sheets({ version: 'v4', auth: this.auth });
+      // Initialize Drive Activity API
+      this.driveactivity = google.driveactivity({ version: 'v2', auth: this.auth });
+      // Initialize People API
+      this.people = google.people({ version: 'v1', auth: this.auth });
     } catch (error) {
       console.error('Failed to initialize Google Drive client:', error);
       throw error;
     }
+  }
+
+  /**
+   * Force re-authentication even if token exists
+   */
+  async reauthenticate(): Promise<void> {
+    clearToken();
+    this.auth = null;
+    this.drive = null;
+    this.sheets = null;
+    this.driveactivity = null;
+    this.people = null;
+    await this.ensureInitialized(true);
+  }
+
+  /**
+   * Manual authentication trigger (for MCP tool)
+   */
+  async authenticate(): Promise<{ success: boolean; email?: string; message: string }> {
+    try {
+      // First, try to re-read token from disk (in case it was updated externally)
+      try {
+        await this.ensureInitialized(false, true); // forceRefresh = true, autoPopup = false
+      } catch {
+        // No token exists, that's fine - we'll do OAuth below
+      }
+
+      if (this.drive) {
+        // Verify the token works
+        try {
+          const about = await this.drive.about.get({ fields: 'user' });
+          return {
+            success: true,
+            email: about.data.user?.emailAddress,
+            message: `Already authenticated as ${about.data.user?.emailAddress}`,
+          };
+        } catch {
+          // Token is invalid, need to re-auth
+          console.error('Existing token invalid, clearing and re-authenticating');
+          clearToken();
+          this.auth = null;
+          this.drive = null;
+          this.sheets = null;
+          this.driveactivity = null;
+          this.people = null;
+        }
+      }
+
+      // Perform OAuth flow (opens browser)
+      await performOAuthFlow();
+
+      // Re-initialize with new token
+      await this.ensureInitialized(false, true); // forceRefresh = true
+
+      // Get user info
+      const about = await this.drive.about.get({ fields: 'user' });
+      return {
+        success: true,
+        email: about.data.user?.emailAddress,
+        message: `Successfully authenticated as ${about.data.user?.emailAddress}`,
+      };
+    } catch (error) {
+      return {
+        success: false,
+        message: `Authentication failed: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+  }
+
+  /**
+   * Clear stored credentials (for MCP tool)
+   */
+  logout(): { success: boolean; message: string } {
+    clearToken();
+    this.auth = null;
+    this.drive = null;
+    this.sheets = null;
+    this.driveactivity = null;
+    this.people = null;
+    return {
+      success: true,
+      message: 'Successfully logged out. Use the authenticate tool to sign in again.',
+    };
+  }
+
+  /**
+   * Check if authenticated
+   */
+  isAuthenticated(): boolean {
+    return loadStoredToken() !== null;
   }
 
   async listFiles(
@@ -160,9 +313,7 @@ export class GoogleDriveClient {
     folderId?: string,
     pageSize: number = 100
   ): Promise<DriveFile[]> {
-    if (!this.drive) {
-      throw new Error('Google Drive client not initialized');
-    }
+    await this.ensureInitialized();
 
     try {
       let q = query || '';
@@ -195,9 +346,7 @@ export class GoogleDriveClient {
   }
 
   async readFile(fileId: string): Promise<string> {
-    if (!this.drive) {
-      throw new Error('Google Drive client not initialized');
-    }
+    await this.ensureInitialized();
 
     try {
       // Get file metadata to determine type
@@ -256,9 +405,7 @@ export class GoogleDriveClient {
   }
 
   async getFileRevisions(fileId: string, pageSize: number = 100): Promise<FileRevision[]> {
-    if (!this.drive) {
-      throw new Error('Google Drive client not initialized');
-    }
+    await this.ensureInitialized();
 
     try {
       const response = await this.drive.revisions.list({
@@ -276,9 +423,7 @@ export class GoogleDriveClient {
   }
 
   async readFileRevision(fileId: string, revisionId: string): Promise<string> {
-    if (!this.drive) {
-      throw new Error('Google Drive client not initialized');
-    }
+    await this.ensureInitialized();
 
     try {
       // Get file metadata to determine type
@@ -362,9 +507,7 @@ export class GoogleDriveClient {
     revisionId1: string,
     revisionId2: string
   ): Promise<string> {
-    if (!this.drive) {
-      throw new Error('Google Drive client not initialized');
-    }
+    await this.ensureInitialized();
 
     try {
       // Get both revision contents
@@ -422,9 +565,7 @@ export class GoogleDriveClient {
   // ========== Phase 5: Comments & Collaboration ==========
 
   async listComments(fileId: string, includeDeleted: boolean = false): Promise<FileComment[]> {
-    if (!this.drive) {
-      throw new Error('Google Drive client not initialized');
-    }
+    await this.ensureInitialized();
 
     try {
       const response = await this.drive.comments.list({
@@ -446,9 +587,7 @@ export class GoogleDriveClient {
     content: string,
     quotedText?: string
   ): Promise<FileComment> {
-    if (!this.drive) {
-      throw new Error('Google Drive client not initialized');
-    }
+    await this.ensureInitialized();
 
     try {
       const commentBody: any = {
@@ -476,9 +615,7 @@ export class GoogleDriveClient {
   }
 
   async resolveComment(fileId: string, commentId: string): Promise<FileComment> {
-    if (!this.drive) {
-      throw new Error('Google Drive client not initialized');
-    }
+    await this.ensureInitialized();
 
     try {
       const response = await this.drive.comments.update({
@@ -499,9 +636,7 @@ export class GoogleDriveClient {
   }
 
   async unresolveComment(fileId: string, commentId: string): Promise<FileComment> {
-    if (!this.drive) {
-      throw new Error('Google Drive client not initialized');
-    }
+    await this.ensureInitialized();
 
     try {
       const response = await this.drive.comments.update({
@@ -554,9 +689,7 @@ export class GoogleDriveClient {
   }
 
   async starFile(fileId: string): Promise<void> {
-    if (!this.drive) {
-      throw new Error('Google Drive client not initialized');
-    }
+    await this.ensureInitialized();
 
     try {
       await this.drive.files.update({
@@ -573,9 +706,7 @@ export class GoogleDriveClient {
   }
 
   async unstarFile(fileId: string): Promise<void> {
-    if (!this.drive) {
-      throw new Error('Google Drive client not initialized');
-    }
+    await this.ensureInitialized();
 
     try {
       await this.drive.files.update({
@@ -598,9 +729,7 @@ export class GoogleDriveClient {
     range: string,
     value: string
   ): Promise<any> {
-    if (!this.sheets) {
-      throw new Error('Google Sheets client not initialized');
-    }
+    await this.ensureInitialized();
 
     try {
       const response = await this.sheets.spreadsheets.values.update({
@@ -624,9 +753,7 @@ export class GoogleDriveClient {
     range: string,
     values: string[]
   ): Promise<any> {
-    if (!this.sheets) {
-      throw new Error('Google Sheets client not initialized');
-    }
+    await this.ensureInitialized();
 
     try {
       const response = await this.sheets.spreadsheets.values.append({
@@ -650,9 +777,7 @@ export class GoogleDriveClient {
     spreadsheetId: string,
     updates: Array<{ range: string; values: string[][] }>
   ): Promise<any> {
-    if (!this.sheets) {
-      throw new Error('Google Sheets client not initialized');
-    }
+    await this.ensureInitialized();
 
     try {
       const data = updates.map((update) => ({
@@ -676,9 +801,7 @@ export class GoogleDriveClient {
   }
 
   async createSpreadsheet(title: string, sheetTitles?: string[]): Promise<any> {
-    if (!this.sheets) {
-      throw new Error('Google Sheets client not initialized');
-    }
+    await this.ensureInitialized();
 
     try {
       const sheets = sheetTitles
@@ -700,9 +823,7 @@ export class GoogleDriveClient {
   }
 
   async listSheets(spreadsheetId: string): Promise<any> {
-    if (!this.sheets) {
-      throw new Error('Google Sheets client not initialized');
-    }
+    await this.ensureInitialized();
 
     try {
       const response = await this.sheets.spreadsheets.get({
@@ -725,9 +846,7 @@ export class GoogleDriveClient {
   }
 
   async readSheet(spreadsheetId: string, sheetName?: string, range?: string): Promise<string> {
-    if (!this.sheets) {
-      throw new Error('Google Sheets client not initialized');
-    }
+    await this.ensureInitialized();
 
     try {
       // If no sheet name provided, read all sheets
@@ -809,9 +928,7 @@ export class GoogleDriveClient {
     content?: string,
     parentFolderId?: string
   ): Promise<DriveFile> {
-    if (!this.drive) {
-      throw new Error('Google Drive client not initialized');
-    }
+    await this.ensureInitialized();
 
     try {
       const fileMetadata: any = {
@@ -860,9 +977,7 @@ export class GoogleDriveClient {
     name?: string,
     parentFolderId?: string
   ): Promise<DriveFile> {
-    if (!this.drive) {
-      throw new Error('Google Drive client not initialized');
-    }
+    await this.ensureInitialized();
 
     try {
       // Read file from local path
@@ -922,9 +1037,7 @@ export class GoogleDriveClient {
     fileId: string,
     localPath: string
   ): Promise<DriveFile> {
-    if (!this.drive) {
-      throw new Error('Google Drive client not initialized');
-    }
+    await this.ensureInitialized();
 
     try {
       // Read file from local path
@@ -973,9 +1086,7 @@ export class GoogleDriveClient {
   }
 
   async createFolder(name: string, parentFolderId?: string): Promise<DriveFile> {
-    if (!this.drive) {
-      throw new Error('Google Drive client not initialized');
-    }
+    await this.ensureInitialized();
 
     try {
       const fileMetadata: any = {
@@ -1001,9 +1112,7 @@ export class GoogleDriveClient {
   }
 
   async moveFile(fileId: string, newParentFolderId: string): Promise<DriveFile> {
-    if (!this.drive) {
-      throw new Error('Google Drive client not initialized');
-    }
+    await this.ensureInitialized();
 
     try {
       // Get current parents
@@ -1032,9 +1141,7 @@ export class GoogleDriveClient {
   }
 
   async copyFile(fileId: string, newName?: string, parentFolderId?: string): Promise<DriveFile> {
-    if (!this.drive) {
-      throw new Error('Google Drive client not initialized');
-    }
+    await this.ensureInitialized();
 
     try {
       const requestBody: any = {};
@@ -1062,9 +1169,7 @@ export class GoogleDriveClient {
   }
 
   async deleteFile(fileId: string): Promise<void> {
-    if (!this.drive) {
-      throw new Error('Google Drive client not initialized');
-    }
+    await this.ensureInitialized();
 
     try {
       await this.drive.files.delete({
@@ -1085,9 +1190,7 @@ export class GoogleDriveClient {
       starred?: boolean;
     }
   ): Promise<DriveFile> {
-    if (!this.drive) {
-      throw new Error('Google Drive client not initialized');
-    }
+    await this.ensureInitialized();
 
     try {
       const response = await this.drive.files.update({
@@ -1112,9 +1215,7 @@ export class GoogleDriveClient {
     role: 'reader' | 'commenter' | 'writer',
     sendNotificationEmail: boolean = true
   ): Promise<FilePermission> {
-    if (!this.drive) {
-      throw new Error('Google Drive client not initialized');
-    }
+    await this.ensureInitialized();
 
     try {
       const response = await this.drive.permissions.create({
@@ -1137,9 +1238,7 @@ export class GoogleDriveClient {
   }
 
   async getPermissions(fileId: string): Promise<FilePermission[]> {
-    if (!this.drive) {
-      throw new Error('Google Drive client not initialized');
-    }
+    await this.ensureInitialized();
 
     try {
       const response = await this.drive.permissions.list({
@@ -1160,9 +1259,7 @@ export class GoogleDriveClient {
     permissionId: string,
     role: 'reader' | 'commenter' | 'writer'
   ): Promise<FilePermission> {
-    if (!this.drive) {
-      throw new Error('Google Drive client not initialized');
-    }
+    await this.ensureInitialized();
 
     try {
       const response = await this.drive.permissions.update({
@@ -1181,9 +1278,7 @@ export class GoogleDriveClient {
   }
 
   async deletePermission(fileId: string, permissionId: string): Promise<void> {
-    if (!this.drive) {
-      throw new Error('Google Drive client not initialized');
-    }
+    await this.ensureInitialized();
 
     try {
       await this.drive.permissions.delete({
@@ -1201,9 +1296,7 @@ export class GoogleDriveClient {
     fileId: string,
     role: 'reader' | 'commenter' | 'writer' = 'reader'
   ): Promise<{ link: string; permission: FilePermission }> {
-    if (!this.drive) {
-      throw new Error('Google Drive client not initialized');
-    }
+    await this.ensureInitialized();
 
     try {
       const permission = await this.drive.permissions.create({
@@ -1235,9 +1328,7 @@ export class GoogleDriveClient {
   // ========== Phase 7: File Metadata & Properties ==========
 
   async getFileMetadata(fileId: string): Promise<FileMetadata> {
-    if (!this.drive) {
-      throw new Error('Google Drive client not initialized');
-    }
+    await this.ensureInitialized();
 
     try {
       const response = await this.drive.files.get({
@@ -1258,9 +1349,7 @@ export class GoogleDriveClient {
     fileId: string,
     properties: { [key: string]: string }
   ): Promise<FileMetadata> {
-    if (!this.drive) {
-      throw new Error('Google Drive client not initialized');
-    }
+    await this.ensureInitialized();
 
     try {
       const response = await this.drive.files.update({
@@ -1286,9 +1375,7 @@ export class GoogleDriveClient {
     fileId: string,
     mimeType: string
   ): Promise<string> {
-    if (!this.drive) {
-      throw new Error('Google Drive client not initialized');
-    }
+    await this.ensureInitialized();
 
     try {
       // Check if file is a Google Workspace file
@@ -1327,9 +1414,7 @@ export class GoogleDriveClient {
   }
 
   async downloadFile(fileId: string): Promise<Buffer> {
-    if (!this.drive) {
-      throw new Error('Google Drive client not initialized');
-    }
+    await this.ensureInitialized();
 
     try {
       const response = await this.drive.files.get(
@@ -1390,9 +1475,7 @@ export class GoogleDriveClient {
   // ========== Phase 10: Shared Drives ==========
 
   async listSharedDrives(pageSize: number = 100): Promise<SharedDrive[]> {
-    if (!this.drive) {
-      throw new Error('Google Drive client not initialized');
-    }
+    await this.ensureInitialized();
 
     try {
       const response = await this.drive.drives.list({
@@ -1408,9 +1491,7 @@ export class GoogleDriveClient {
   }
 
   async getSharedDrive(driveId: string): Promise<SharedDrive> {
-    if (!this.drive) {
-      throw new Error('Google Drive client not initialized');
-    }
+    await this.ensureInitialized();
 
     try {
       const response = await this.drive.drives.get({
@@ -1430,9 +1511,7 @@ export class GoogleDriveClient {
     query?: string,
     pageSize: number = 100
   ): Promise<DriveFile[]> {
-    if (!this.drive) {
-      throw new Error('Google Drive client not initialized');
-    }
+    await this.ensureInitialized();
 
     try {
       let q = query || '';
@@ -1453,5 +1532,354 @@ export class GoogleDriveClient {
       console.error('Error listing files in shared drive:', error);
       throw error;
     }
+  }
+
+  // ========== Phase 11: Drive Activity API ==========
+
+  /**
+   * Resolve a people resource name (e.g., "people/123456") to a display name
+   * Uses caching to avoid repeated API calls
+   */
+  private async resolvePeopleName(resourceName: string): Promise<string> {
+    // Check cache first
+    if (this.peopleCache.has(resourceName)) {
+      return this.peopleCache.get(resourceName)!;
+    }
+
+    try {
+      const response = await this.people.people.get({
+        resourceName,
+        personFields: 'names,emailAddresses',
+      });
+
+      let displayName = resourceName; // fallback to ID
+      if (response.data.names && response.data.names.length > 0) {
+        displayName = response.data.names[0].displayName || resourceName;
+      } else if (response.data.emailAddresses && response.data.emailAddresses.length > 0) {
+        displayName = response.data.emailAddresses[0].value || resourceName;
+      }
+
+      this.peopleCache.set(resourceName, displayName);
+      return displayName;
+    } catch (error) {
+      // If we can't resolve the name, cache and return the original ID
+      this.peopleCache.set(resourceName, resourceName);
+      return resourceName;
+    }
+  }
+
+  /**
+   * Batch resolve multiple people resource names to display names
+   */
+  private async resolvePeopleNames(resourceNames: string[]): Promise<Map<string, string>> {
+    const results = new Map<string, string>();
+    const toResolve: string[] = [];
+
+    // Check cache first
+    for (const name of resourceNames) {
+      if (this.peopleCache.has(name)) {
+        results.set(name, this.peopleCache.get(name)!);
+      } else {
+        toResolve.push(name);
+      }
+    }
+
+    // Batch resolve uncached names (People API supports batch get)
+    if (toResolve.length > 0) {
+      try {
+        const response = await this.people.people.getBatchGet({
+          resourceNames: toResolve,
+          personFields: 'names,emailAddresses',
+        });
+
+        if (response.data.responses) {
+          for (const personResponse of response.data.responses) {
+            if (personResponse.person) {
+              const resourceName = personResponse.requestedResourceName || '';
+              let displayName = resourceName;
+
+              if (personResponse.person.names && personResponse.person.names.length > 0) {
+                displayName = personResponse.person.names[0].displayName || resourceName;
+              } else if (personResponse.person.emailAddresses && personResponse.person.emailAddresses.length > 0) {
+                displayName = personResponse.person.emailAddresses[0].value || resourceName;
+              }
+
+              this.peopleCache.set(resourceName, displayName);
+              results.set(resourceName, displayName);
+            }
+          }
+        }
+      } catch (error) {
+        // If batch fails, fall back to individual resolution
+        for (const name of toResolve) {
+          const resolved = await this.resolvePeopleName(name);
+          results.set(name, resolved);
+        }
+      }
+    }
+
+    // For any that weren't resolved, use the original ID
+    for (const name of resourceNames) {
+      if (!results.has(name)) {
+        results.set(name, name);
+      }
+    }
+
+    return results;
+  }
+
+  /**
+   * Query recent drive activity across all files
+   * @param options Query options
+   * @returns Array of drive activities
+   */
+  async queryActivity(options: {
+    pageSize?: number;
+    filter?: string;
+    ancestorName?: string;
+    itemName?: string;
+  } = {}): Promise<{ activities: DriveActivity[]; nextPageToken?: string }> {
+    await this.ensureInitialized();
+
+    try {
+      const requestBody: any = {
+        pageSize: options.pageSize || 50,
+        consolidationStrategy: {
+          legacy: {},
+        },
+      };
+
+      if (options.filter) {
+        requestBody.filter = options.filter;
+      }
+
+      if (options.ancestorName) {
+        requestBody.ancestorName = options.ancestorName;
+      }
+
+      if (options.itemName) {
+        requestBody.itemName = options.itemName;
+      }
+
+      const response = await this.driveactivity.activity.query({
+        requestBody,
+      });
+
+      return {
+        activities: response.data.activities || [],
+        nextPageToken: response.data.nextPageToken,
+      };
+    } catch (error) {
+      console.error('Error querying drive activity:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get recent activity with a friendly format
+   * @param daysBack Number of days to look back (default: 7)
+   * @param actionTypes Optional filter for action types (e.g., 'comment', 'edit', 'create')
+   */
+  async getRecentActivity(
+    daysBack: number = 7,
+    actionTypes?: string[]
+  ): Promise<Array<{
+    time: string;
+    action: string;
+    actor: string;
+    target: string;
+    targetId?: string;
+    details?: any;
+  }>> {
+    await this.ensureInitialized();
+
+    try {
+      // Calculate time filter
+      const startTime = Date.now() - (daysBack * 24 * 60 * 60 * 1000);
+      let filter = `time > ${startTime}`;
+
+      // Add action type filter if specified
+      if (actionTypes && actionTypes.length > 0) {
+        const actionFilters = actionTypes.map(t => {
+          const actionMap: { [key: string]: string } = {
+            'comment': 'COMMENT',
+            'create': 'CREATE',
+            'edit': 'EDIT',
+            'move': 'MOVE',
+            'rename': 'RENAME',
+            'delete': 'DELETE',
+            'restore': 'RESTORE',
+            'permission': 'PERMISSION_CHANGE',
+          };
+          return actionMap[t.toLowerCase()] || t.toUpperCase();
+        });
+        filter += ` AND detail.action_detail_case:(${actionFilters.join(' ')})`;
+      }
+
+      const result = await this.queryActivity({
+        pageSize: 100,
+        filter,
+      });
+
+      // Collect all people IDs to resolve in batch
+      const peopleIds = new Set<string>();
+      for (const activity of result.activities) {
+        if (activity.actors) {
+          for (const actor of activity.actors) {
+            if (actor.user?.knownUser?.personName) {
+              peopleIds.add(actor.user.knownUser.personName);
+            }
+          }
+        }
+        // Also collect mentioned users from comments
+        const comment = activity.primaryActionDetail?.comment;
+        if (comment?.mentionedUsers) {
+          for (const user of comment.mentionedUsers) {
+            if (user.knownUser?.personName) {
+              peopleIds.add(user.knownUser.personName);
+            }
+          }
+        }
+        if (comment?.assignment?.assignedUser?.knownUser?.personName) {
+          peopleIds.add(comment.assignment.assignedUser.knownUser.personName);
+        }
+      }
+
+      // Batch resolve all people names
+      const peopleNames = await this.resolvePeopleNames(Array.from(peopleIds));
+
+      // Transform to friendly format
+      return result.activities.map(activity => {
+        // Determine action type
+        let action = 'unknown';
+        let details: any = undefined;
+        const primaryAction = activity.primaryActionDetail;
+        if (primaryAction) {
+          if (primaryAction.create) action = 'create';
+          else if (primaryAction.edit) action = 'edit';
+          else if (primaryAction.move) action = 'move';
+          else if (primaryAction.rename) {
+            action = 'rename';
+            details = primaryAction.rename;
+          }
+          else if (primaryAction.delete) action = 'delete';
+          else if (primaryAction.restore) action = 'restore';
+          else if (primaryAction.comment) {
+            action = 'comment';
+            // Resolve mentioned users in details
+            const commentDetails: any = { ...primaryAction.comment };
+            if (commentDetails.mentionedUsers) {
+              commentDetails.mentionedUsers = commentDetails.mentionedUsers.map((u: any) => {
+                const personName = u.knownUser?.personName;
+                return personName ? peopleNames.get(personName) || personName : 'unknown';
+              });
+            }
+            if (commentDetails.assignment?.assignedUser?.knownUser?.personName) {
+              const personName = commentDetails.assignment.assignedUser.knownUser.personName;
+              commentDetails.assignedTo = peopleNames.get(personName) || personName;
+            }
+            details = commentDetails;
+          }
+          else if (primaryAction.permissionChange) action = 'permission_change';
+        }
+
+        // Get actor (resolved to name)
+        let actor = 'unknown';
+        let isCurrentUser = false;
+        if (activity.actors && activity.actors.length > 0) {
+          const firstActor = activity.actors[0];
+          if (firstActor.user?.knownUser) {
+            const personName = firstActor.user.knownUser.personName || '';
+            actor = peopleNames.get(personName) || personName || 'unknown';
+            isCurrentUser = firstActor.user.knownUser.isCurrentUser || false;
+            if (isCurrentUser) {
+              actor += ' (you)';
+            }
+          }
+        }
+
+        // Get target
+        let target = 'unknown';
+        let targetId: string | undefined;
+        if (activity.targets && activity.targets.length > 0) {
+          const firstTarget = activity.targets[0];
+          if (firstTarget.driveItem) {
+            target = firstTarget.driveItem.title || 'unknown';
+            // Extract file ID from name (format: items/FILE_ID)
+            if (firstTarget.driveItem.name) {
+              targetId = firstTarget.driveItem.name.replace('items/', '');
+            }
+          } else if (firstTarget.fileComment) {
+            target = firstTarget.fileComment.parent?.title || 'unknown (comment)';
+            if (firstTarget.fileComment.parent?.name) {
+              targetId = firstTarget.fileComment.parent.name.replace('items/', '');
+            }
+          }
+        }
+
+        // Get time
+        const time = activity.timestamp || activity.timeRange?.startTime || 'unknown';
+
+        return {
+          time,
+          action,
+          actor,
+          target,
+          targetId,
+          details,
+        };
+      });
+    } catch (error) {
+      console.error('Error getting recent activity:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get recent comments across all files (convenience method)
+   * @param daysBack Number of days to look back (default: 7)
+   */
+  async getRecentCommentActivity(daysBack: number = 7): Promise<Array<{
+    time: string;
+    actor: string;
+    target: string;
+    targetId?: string;
+    commentType: string;
+    mentionedUsers?: string[];
+    assignedTo?: string;
+  }>> {
+    const activities = await this.getRecentActivity(daysBack, ['comment']);
+
+    return activities.map(activity => {
+      let commentType = 'comment';
+      let mentionedUsers: string[] = [];
+      let assignedTo: string | undefined;
+
+      if (activity.details) {
+        if (activity.details.post) {
+          commentType = activity.details.post.subtype || 'post';
+        } else if (activity.details.assignment) {
+          commentType = 'assignment';
+          assignedTo = activity.details.assignedTo;
+        } else if (activity.details.suggestion) {
+          commentType = activity.details.suggestion.subtype || 'suggestion';
+        }
+
+        // mentionedUsers is now already an array of resolved names (strings)
+        if (activity.details.mentionedUsers && Array.isArray(activity.details.mentionedUsers)) {
+          mentionedUsers = activity.details.mentionedUsers.filter((u: any) => typeof u === 'string');
+        }
+      }
+
+      return {
+        time: activity.time,
+        actor: activity.actor,
+        target: activity.target,
+        targetId: activity.targetId,
+        commentType,
+        mentionedUsers: mentionedUsers.length > 0 ? mentionedUsers : undefined,
+        assignedTo,
+      };
+    });
   }
 }

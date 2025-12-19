@@ -30,6 +30,23 @@ const driveClient = new GoogleDriveClient();
 
 // Define available tools
 const tools: Tool[] = [
+  // Authentication tools
+  {
+    name: 'authenticate',
+    description: 'Authenticate with Google Drive. Opens a browser window for OAuth sign-in. Use this if you need to sign in or switch accounts.',
+    inputSchema: {
+      type: 'object',
+      properties: {},
+    },
+  },
+  {
+    name: 'logout',
+    description: 'Clear stored Google Drive credentials. You will need to re-authenticate after using this.',
+    inputSchema: {
+      type: 'object',
+      properties: {},
+    },
+  },
   {
     name: 'list_files',
     description: 'List files in Google Drive with optional search query',
@@ -879,6 +896,40 @@ const tools: Tool[] = [
       required: ['driveId'],
     },
   },
+  // Phase 11: Drive Activity API
+  {
+    name: 'list_activity',
+    description: 'Get recent activity across all Google Drive files (like the Activity tab in Drive UI). Shows edits, comments, shares, renames, etc. across all files you have access to.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        daysBack: {
+          type: 'number',
+          description: 'Number of days to look back (default: 7)',
+          default: 7,
+        },
+        actionTypes: {
+          type: 'array',
+          description: 'Optional: Filter by action types. Possible values: comment, create, edit, move, rename, delete, restore, permission',
+          items: { type: 'string' },
+        },
+      },
+    },
+  },
+  {
+    name: 'list_comment_activity',
+    description: 'Get recent comment activity across all Google Drive files. Shows who commented on what, including mentions and assignments.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        daysBack: {
+          type: 'number',
+          description: 'Number of days to look back (default: 7)',
+          default: 7,
+        },
+      },
+    },
+  },
 ];
 
 // Handle list_tools request
@@ -892,6 +943,33 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   try {
     switch (name) {
+      // Authentication tools
+      case 'authenticate': {
+        const result = await driveClient.authenticate();
+        return {
+          content: [
+            {
+              type: 'text',
+              text: result.email
+                ? `Authentication successful! Signed in as: ${result.email}`
+                : result.message,
+            },
+          ],
+        };
+      }
+
+      case 'logout': {
+        const result = driveClient.logout();
+        return {
+          content: [
+            {
+              type: 'text',
+              text: result.message,
+            },
+          ],
+        };
+      }
+
       case 'list_files': {
         const { query, folderId, pageSize = 100 } = args as {
           query?: string;
@@ -1609,6 +1687,38 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             {
               type: 'text',
               text: JSON.stringify(files, null, 2),
+            },
+          ],
+        };
+      }
+
+      // Phase 11: Drive Activity API
+      case 'list_activity': {
+        const { daysBack = 7, actionTypes } = args as {
+          daysBack?: number;
+          actionTypes?: string[];
+        };
+        const activities = await driveClient.getRecentActivity(daysBack, actionTypes);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(activities, null, 2),
+            },
+          ],
+        };
+      }
+
+      case 'list_comment_activity': {
+        const { daysBack = 7 } = args as {
+          daysBack?: number;
+        };
+        const comments = await driveClient.getRecentCommentActivity(daysBack);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(comments, null, 2),
             },
           ],
         };
